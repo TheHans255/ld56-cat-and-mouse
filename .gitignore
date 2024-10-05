@@ -1,0 +1,8 @@
+# I keep the WASM-4 executable in the working directory
+w4
+
+# I symlink to cart.wasm in the working directory to make the commands easier
+cart.wasm
+
+# And, of course, don't commit the Rust build directory
+/target

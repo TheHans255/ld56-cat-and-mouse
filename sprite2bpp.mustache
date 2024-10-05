@@ -1,0 +1,9 @@
+{{#sprites}}
+// {{name}} 
+// (should be BLIT_2PP, is {{flagsHumanReadable}})
+const {{rustName}}_TEXTURE_DATA: [u8; {{length}}] = [ {{bytes}} ];
+const {{rustName}}_TEXTURE: Texture4Color<'static> = Texture4Color {
+    data: &{{rustName}}_TEXTURE_DATA,
+    stride: {{width}}
+};
+{{/sprites}}
