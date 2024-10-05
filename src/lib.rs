@@ -1,5 +1,4 @@
 use std::{
-    cell::{Cell, RefCell},
     sync::Mutex,
 };
 
@@ -7,8 +6,9 @@ use assets::{
     CAT_ARM, CAT_HAND_CLOSED, CAT_HAND_OPEN, HARDWOOD_FLOOR_PATTERN, HARDWOOD_FLOOR_SPRITES,
     MOUSE_TARGETS,
 };
-use wasm4::SCREEN_SIZE;
-use wasm4_mmio::PALETTE;
+use sync_unsafe_cell::SyncUnsafeCell;
+use wasm4::{tone, trace, MOUSE_LEFT, SCREEN_SIZE};
+use wasm4_mmio::{MOUSE_BUTTONS, MOUSE_X, MOUSE_Y, PALETTE};
 
 #[cfg(feature = "buddy-alloc")]
 mod alloc;
@@ -28,14 +28,42 @@ mod wasm4_mmio;
 const PALETTE_HOMEWORK: [u32; 4] = [0x12121b, 0x45568d, 0x878c9d, 0xe1d8d4];
 //const PALETTE_MANGAVANIA: [u32; 4] = [0x6e1a4b, 0xe64ca4, 0x4aedff, 0xffffff];
 
+#[derive(Debug)]
 // Top level struct for game state
 struct GameState {
     pub frame: u32,
+    pub cat_hand_x: f32,
+    pub cat_hand_y: f32,
+    pub cat_hand_x_prev: f32,
+    pub cat_hand_y_prev: f32,
+    pub cat_hand_state: CatHandState,
+    pub cat_hand_target_x: f32,
+    pub cat_hand_target_y: f32,
 }
 
-// TODO: If I can use SyncUnsafeCell here instead, that'd be great, since
-//       we don't actually have mutliple threads running through here
-static GLOBAL_GAME_STATE: Mutex<GameState> = Mutex::new(GameState { frame: 0 });
+#[derive(PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum CatHandState {
+    Ready,
+    Attacking,
+    Retreating,
+}
+
+impl GameState {
+    const fn new() -> Self {
+        Self {
+            frame: 0,
+            cat_hand_x: 120.0,
+            cat_hand_y: CAT_HAND_WAIT_Y,
+            cat_hand_x_prev: 120.0,
+            cat_hand_y_prev: CAT_HAND_WAIT_Y,
+            cat_hand_state: CatHandState::Ready,
+            cat_hand_target_x: 120.0,
+            cat_hand_target_y: CAT_HAND_WAIT_Y
+        }
+    }
+}
+
+static GLOBAL_GAME_STATE: SyncUnsafeCell<GameState> = SyncUnsafeCell::new(GameState::new());
 
 #[no_mangle]
 fn start() {
@@ -67,9 +95,112 @@ fn draw_floor_pattern() {
     }
 }
 
+const CAT_HAND_WAIT_Y: f32 = 155.0;
+const CAT_HAND_ACCELERATION: f32 = 0.1;
+const CAT_HAND_CATCH_RANGE: f32 = 10.0;
+
+fn update_cat_hand(game_state: &mut GameState) {
+    // TODO: Split this out into its own module
+    // TODO: This system looks real real bad. The cat hand does not move at all naturally
+    //       and does not follow the nice arc you were looking to achieve.
+    //       Maybe there's a different way you can achieve a nice arc (e.g.
+    //       the only force the cat hand can do is extend/retract, and horizontal
+    //       movement is controlled with orbiting around a character instead)
+    // set target based on input
+    match game_state.cat_hand_state {
+        CatHandState::Ready => {
+            if MOUSE_BUTTONS.read() & MOUSE_LEFT != 0 {
+                game_state.cat_hand_state = CatHandState::Attacking;
+                game_state.cat_hand_target_x = MOUSE_X.read() as f32;
+                game_state.cat_hand_target_y = MOUSE_Y.read() as f32;
+                trace(format!("click {} {}", game_state.cat_hand_target_x, game_state.cat_hand_target_y));
+                tone(440, 10, 10, 0);
+            } else {
+                game_state.cat_hand_target_x = (MOUSE_X.read() as f32 + 160.0) / 2.0;
+                game_state.cat_hand_target_y = 155.0;
+            }
+        },
+        _ => ()
+    }
+
+    // accelerate towards target
+    let x_to_target = game_state.cat_hand_target_x - game_state.cat_hand_x;
+    let y_to_target = game_state.cat_hand_target_y - game_state.cat_hand_y;
+    let distance_to_target = (x_to_target * x_to_target + y_to_target * y_to_target).sqrt();
+    let mut x_acceleration: f32;
+    let mut y_acceleration: f32;
+    if distance_to_target == 0.0 || CAT_HAND_ACCELERATION < distance_to_target {
+        x_acceleration = x_to_target;
+        y_acceleration = y_to_target;
+    } else {
+        x_acceleration = x_to_target * CAT_HAND_ACCELERATION / distance_to_target;
+        y_acceleration = y_to_target * CAT_HAND_ACCELERATION / distance_to_target;
+    }
+
+    // apply friction
+    let friction_coefficient = if game_state.cat_hand_state == CatHandState::Ready { 0.95 } else { 0.5 };
+    x_acceleration -= (game_state.cat_hand_x - game_state.cat_hand_x_prev) * friction_coefficient;
+    y_acceleration -= (game_state.cat_hand_y - game_state.cat_hand_y_prev) * friction_coefficient;
+
+    // apply verlet integration
+    let x_velocity = game_state.cat_hand_x - game_state.cat_hand_x_prev + x_acceleration / 2.0;
+    let y_velocity = game_state.cat_hand_y - game_state.cat_hand_y_prev + y_acceleration / 2.0;
+    game_state.cat_hand_x_prev = game_state.cat_hand_x;
+    game_state.cat_hand_y_prev = game_state.cat_hand_y;
+    game_state.cat_hand_x += x_velocity;
+    game_state.cat_hand_y += y_velocity;
+
+    // resolve attack states
+    match game_state.cat_hand_state {
+        CatHandState::Ready => (),
+        CatHandState::Attacking => {
+            let x_to_target = game_state.cat_hand_target_x - game_state.cat_hand_x;
+            let y_to_target = game_state.cat_hand_target_y - game_state.cat_hand_y;
+            let distance_to_target = (x_to_target * x_to_target + y_to_target * y_to_target).sqrt();
+            if distance_to_target < CAT_HAND_CATCH_RANGE {
+                game_state.cat_hand_state = CatHandState::Retreating;
+                game_state.cat_hand_target_y = 160.0;
+                game_state.cat_hand_target_x = 0.0;
+                // TODO: score target here
+            }
+        },
+        CatHandState::Retreating => {
+            if game_state.cat_hand_y >= CAT_HAND_WAIT_Y
+                && MOUSE_BUTTONS.read() & MOUSE_LEFT == 0 {
+                game_state.cat_hand_state = CatHandState::Ready;
+                tone(300, 10, 10, 0);
+            }
+        },
+    }
+}
+
+fn draw_cat_hand(game_state: &GameState) {
+    // TODO: Split this out into its own module
+    let cat_hand_sprite = if game_state.cat_hand_state == CatHandState::Attacking {
+        &CAT_HAND_OPEN
+    } else {
+        &CAT_HAND_CLOSED
+    };
+    cat_hand_sprite.draw(
+        game_state.cat_hand_x as i32 - cat_hand_sprite.width as i32 / 2,
+        game_state.cat_hand_y as i32 - cat_hand_sprite.height as i32 / 2,
+        0,
+    );
+    let mut cat_arm_y = game_state.cat_hand_y as i32 + cat_hand_sprite.height as i32 / 2;
+    while cat_arm_y < SCREEN_SIZE as i32 {
+        CAT_ARM.draw(
+            game_state.cat_hand_x as i32 - cat_hand_sprite.width as i32 / 2,
+            cat_arm_y as i32,
+            0,
+        );
+        cat_arm_y += CAT_ARM.height as i32;
+    }
+}
+
 #[no_mangle]
 fn update() {
-    let mut game_state = GLOBAL_GAME_STATE.lock().unwrap();
+    let mut game_state = unsafe { GLOBAL_GAME_STATE.get().as_mut().unwrap() };
+    update_cat_hand(&mut game_state);
 
     draw_floor_pattern();
 
@@ -78,24 +209,7 @@ fn update() {
     let mouse_sprite = &(MOUSE_TARGETS[mouse_animation_frame]);
     mouse_sprite.draw(60, 60, 0);
 
-    // TODO: This is just a demo. For the real thing, draw the hand swiping up from
-    //       the bottom of the screen, nabbing a target, and coming back down.
-    //       You would ideally like the hand to go up and down in an arc, and it should
-    //       also be tracking a moving game entity, so that you can reward a player
-    //       for the instant they click on a target rather than attempting to do collision
-    //       when the hand arrives.
-    let cat_hand_animation_frame = ((game_state.frame % 32) / 16) as usize;
-    let cat_hand_sprite = &(if cat_hand_animation_frame == 0 {
-        CAT_HAND_OPEN
-    } else {
-        CAT_HAND_CLOSED
-    });
-    cat_hand_sprite.draw(120, 70, 0);
-    let mut cat_arm_y = 70 + cat_hand_sprite.height;
-    while cat_arm_y < SCREEN_SIZE {
-        CAT_ARM.draw(120, cat_arm_y as i32, 0);
-        cat_arm_y += CAT_ARM.height;
-    }
+    draw_cat_hand(&game_state);
 
     game_state.frame += 1;
 }

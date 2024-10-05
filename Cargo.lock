@@ -13,8 +13,15 @@ name = "cart"
 version = "0.1.0"
 dependencies = [
  "buddy-alloc",
+ "sync-unsafe-cell",
  "voladdress",
 ]
+
+[[package]]
+name = "sync-unsafe-cell"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8deaecba5382c095cb432cd1e21068dadb144208f057b13720e76bf89749beb4"
 
 [[package]]
 name = "voladdress"
