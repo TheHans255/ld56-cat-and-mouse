@@ -3,7 +3,10 @@ use std::{
     sync::Mutex,
 };
 
-use assets::{HARDWOOD_FLOOR_PATTERN, HARDWOOD_FLOOR_SPRITES, MOUSE_TARGETS};
+use assets::{
+    CAT_ARM, CAT_HAND_CLOSED, CAT_HAND_OPEN, HARDWOOD_FLOOR_PATTERN, HARDWOOD_FLOOR_SPRITES,
+    MOUSE_TARGETS,
+};
 use wasm4::SCREEN_SIZE;
 use wasm4_mmio::PALETTE;
 
@@ -74,6 +77,25 @@ fn update() {
 
     let mouse_sprite = &(MOUSE_TARGETS[mouse_animation_frame]);
     mouse_sprite.draw(60, 60, 0);
+
+    // TODO: This is just a demo. For the real thing, draw the hand swiping up from
+    //       the bottom of the screen, nabbing a target, and coming back down.
+    //       You would ideally like the hand to go up and down in an arc, and it should
+    //       also be tracking a moving game entity, so that you can reward a player
+    //       for the instant they click on a target rather than attempting to do collision
+    //       when the hand arrives.
+    let cat_hand_animation_frame = ((game_state.frame % 32) / 16) as usize;
+    let cat_hand_sprite = &(if cat_hand_animation_frame == 0 {
+        CAT_HAND_OPEN
+    } else {
+        CAT_HAND_CLOSED
+    });
+    cat_hand_sprite.draw(120, 70, 0);
+    let mut cat_arm_y = 70 + cat_hand_sprite.height;
+    while cat_arm_y < SCREEN_SIZE {
+        CAT_ARM.draw(120, cat_arm_y as i32, 0);
+        cat_arm_y += CAT_ARM.height;
+    }
 
     game_state.frame += 1;
 }
